@@ -97,6 +97,10 @@ Zgodnie z aktualnym kodem:
 | `DIO1` | `5` |
 | `DIO2` | `6` |
 
+to w wersji z ESP32-S3 na listwę Waveshare 32152 (https://www.waveshare.com/product/arduino/industrial-controller/esp32-s3-relay-1ch.htm) lub Waveshare 32154
+<img width="1074" height="639" alt="image" src="https://github.com/user-attachments/assets/55060299-19f4-4af7-81f2-55b6bf027a0c" />
+
+
 Dodatkowo status sygnalizowany jest przez dioda RGB na:
 
 - `GPIO 38`
