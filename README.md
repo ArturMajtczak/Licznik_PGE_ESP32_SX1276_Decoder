@@ -5,7 +5,7 @@ Projekt do lokalnego odczytu danych z licznika energii **OTUS3 APATOR** uzywaneg
 Urzadzenie nasluchuje ramek **868.95 MHz FSK**, dekoduje telegramy **Wireless M-Bus**, odszyfrowuje je kluczem licznika, wyciaga najwazniejsze pomiary i wysyla dane do serwera HTTP/HTTPS. Dodatkowo ma wbudowany **panel WWW z hotspotem konfiguracyjnym**, lokalna kolejke offline oraz mechanizmy samoregeneracji odbiornika.
 
 Przykładowa wersja z ESP32-S3 na listwę DIN:
-<img width="400" alt="image" src="https://github.com/user-attachments/assets/02e005d6-2d0d-4588-ab36-4659ca1dc3c1" /> <img width="400" alt="image" src="https://github.com/user-attachments/assets/1f2114c7-fcf1-4056-823b-c2ba56a69853" />
+<img width="300" alt="image" src="https://github.com/user-attachments/assets/02e005d6-2d0d-4588-ab36-4659ca1dc3c1" /> <img width="300" alt="image" src="https://github.com/user-attachments/assets/1f2114c7-fcf1-4056-823b-c2ba56a69853" />
 
 
 ## Co to robi
