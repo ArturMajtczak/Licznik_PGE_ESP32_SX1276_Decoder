@@ -204,6 +204,11 @@ W zaleznosci od danych z telegramu pole `datetime` moze byc pomijane.
 
 ## Odszyfrowanie danych
 
+dane otrzymujemy zakodowane:
+```json
+{"model":"sx1276-wmbus","telegram_index":1,"meter_serial":"57444444","manufacturer":"APA","rssi_dbm":-91,"uptime_ms":43604,"l_field":"DE","control":"44","version":1,"device_type":"02","ci_field":"7A","access_no":"56","status_field":"03","config_word":"05D0","encoded_len":380,"decoded_len":253,"encoded":"...","telegram":"DE440106238026570102D93F7A5603D005..."}
+```
+
 Payload z licznika jest odszyfrowywany kluczem `METER_KEY`.
 
 W panelu WWW klucz podajesz jako:
