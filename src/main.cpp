@@ -53,19 +53,24 @@ static constexpr uint16_t MAX_BUFFER_DAYS = 60U;
 static constexpr char CONFIG_NAMESPACE[] = "metercfg";
 static constexpr char QUEUE_META_PATH[] = "/queue_meta.bin";
 static constexpr char QUEUE_DATA_PATH[] = "/queue_data.bin";
-static constexpr uint32_t UPLOAD_RETRY_INTERVAL_MS = 15000UL;
+static constexpr uint32_t UPLOAD_RETRY_SUCCESS_MS = 1000UL;
+static constexpr uint32_t UPLOAD_RETRY_SUCCESS_WHILE_WEB_MS = 15000UL;
+static constexpr uint32_t UPLOAD_RETRY_FAILURE_MS = 30000UL;
 static constexpr uint32_t UPLOAD_GUARD_WINDOW_MS = 8000UL;
 static constexpr uint32_t WIFI_CONNECT_TIMEOUT_MS = 8000UL;
 static constexpr uint32_t WIFI_RECONNECT_INTERVAL_MS = 10000UL;
-static constexpr uint32_t CONFIG_AP_MIN_UPTIME_MS = 60000UL;
+static constexpr uint32_t CONFIG_AP_MAX_UPTIME_MS = 15UL * 60000UL;
 static constexpr uint32_t STATUS_STALE_MS = 130000UL;
 static constexpr uint32_t RADIO_RECOVERY_STALE_MS = 4UL * 60000UL;
 static constexpr uint32_t RADIO_RECOVERY_COOLDOWN_MS = 2UL * 60000UL;
 static constexpr uint32_t FULL_RESTART_STALE_MS = 12UL * 60000UL;
+static constexpr uint32_t UPLOAD_STUCK_RECOVERY_MS = 60UL * 60000UL;
+static constexpr uint32_t UPLOAD_STUCK_RESTART_MS = 30UL * 60000UL;
+static constexpr uint32_t RESTART_AFTER_PACKET_DELAY_MS = 2000UL;
+static constexpr uint32_t WEB_ACTIVITY_ACTIVE_MS = 20000UL;
 static constexpr uint16_t QUEUE_META_MAGIC = 0x514DU;
 static constexpr uint16_t QUEUE_RECORD_MAGIC = 0x524DU;
 static constexpr uint8_t QUEUE_VERSION = 1U;
-static constexpr bool LED_TEST_MODE = false;
 static constexpr uint8_t STATUS_RGB_LEVEL = 40U;
 static constexpr uint8_t STATUS_RGB_PIN = 38;
 static constexpr uint8_t STATUS_RGB_COUNT = 1;
@@ -166,11 +171,16 @@ static bool radioOk = false;
 static bool storageOk = false;
 static bool wifiConnectStarted = false;
 static bool portalActive = false;
+static bool portalAutoStartAllowed = true;
 static bool restartRequested = false;
+static bool uploadRestartArmed = false;
 static uint8_t signalRssiRaw = 0;
-static uint32_t lastPacketMillis = 0;
 static uint32_t lastUploadAttemptMillis = 0;
 static uint32_t lastWifiConnectAttemptMillis = 0;
+static uint32_t lastUploadOkMillis = 0;
+static uint32_t lastUploadRecoveryMillis = 0;
+static uint32_t uploadRestartEligibleAtMillis = 0;
+static uint32_t lastWebActivityMillis = 0;
 static uint32_t greenBlinkUntilMillis = 0;
 static uint32_t configPortalStartedMillis = 0;
 static uint32_t restartAtMillis = 0;
@@ -224,40 +234,6 @@ static void blinkGreenStatusLed() {
 static void blinkRedStatusLed() {
   greenBlinkUntilMillis = millis() + 50UL;
   setStatusLedColor(0, STATUS_LED_BRIGHTNESS, 0);
-}
-
-static void runLedTestMode() {
-  static uint8_t phase = 0;
-  static uint32_t nextToggleMillis = 0;
-  const uint32_t now = millis();
-
-  if (static_cast<int32_t>(now - nextToggleMillis) < 0) {
-    return;
-  }
-
-  phase = static_cast<uint8_t>((phase + 1U) % 6U);
-  nextToggleMillis = now + 500UL;
-
-  switch (phase) {
-    case 0:
-      setStatusLedColor(STATUS_RGB_LEVEL, STATUS_RGB_LEVEL, STATUS_RGB_LEVEL);
-      return;
-    case 1:
-      setStatusLedColor(0, 0, 0);
-      return;
-    case 2:
-      setStatusLedColor(STATUS_RGB_LEVEL, 0, 0);
-      return;
-    case 3:
-      setStatusLedColor(0, STATUS_RGB_LEVEL, 0);
-      return;
-    case 4:
-      setStatusLedColor(0, 0, STATUS_RGB_LEVEL);
-      return;
-    default:
-      setStatusLedColor(0, 0, 0);
-      return;
-  }
 }
 
 static void updateStatusLed() {
@@ -492,6 +468,7 @@ static void ensureConfigApIdentity() {
 
 static void startConfigPortal() {
   ensureConfigApIdentity();
+  portalAutoStartAllowed = true;
   if (!portalActive) {
     WiFi.mode(hasWifiCredentials() ? WIFI_AP_STA : WIFI_AP);
     WiFi.softAP(configApSsid, CONFIG_AP_PASS);
@@ -505,17 +482,16 @@ static void stopConfigPortalIfAllowed() {
     return;
   }
 
-  const bool portalMinRuntimeElapsed = (millis() - configPortalStartedMillis) >= CONFIG_AP_MIN_UPTIME_MS;
-  if (!portalMinRuntimeElapsed) {
-    return;
-  }
-  if (WiFi.status() != WL_CONNECTED) {
+  const uint32_t uptime = millis() - configPortalStartedMillis;
+  const bool portalMaxRuntimeElapsed = uptime >= CONFIG_AP_MAX_UPTIME_MS;
+  if (!portalMaxRuntimeElapsed) {
     return;
   }
 
   WiFi.softAPdisconnect(true);
   WiFi.mode(WIFI_STA);
   portalActive = false;
+  portalAutoStartAllowed = false;
 }
 
 static void maintainWifiConnection() {
@@ -554,10 +530,71 @@ static bool ensureWifiConnected() {
 }
 
 static void managePortalLifetime() {
-  if (!portalActive && (WiFi.status() != WL_CONNECTED)) {
+  if (portalAutoStartAllowed && !portalActive && (WiFi.status() != WL_CONNECTED)) {
     startConfigPortal();
   }
   stopConfigPortalIfAllowed();
+}
+
+static void markWebActivity() {
+  lastWebActivityMillis = millis();
+}
+
+static bool isWebUiActive() {
+  return (lastWebActivityMillis != 0U) && ((millis() - lastWebActivityMillis) <= WEB_ACTIVITY_ACTIVE_MS);
+}
+
+static bool isReceiveGuardWindowActive() {
+  if (lastSuccessfulTelegramMillis == 0U) {
+    return false;
+  }
+
+  const uint32_t elapsed = millis() - lastSuccessfulTelegramMillis;
+  const uint32_t timeToNext = (elapsed < 60000UL) ? (60000UL - elapsed) : 0UL;
+  return timeToNext <= UPLOAD_GUARD_WINDOW_MS;
+}
+
+static const char* uploadProbeHost() {
+  static char host[64] = {0};
+
+  const char* url = runtimeConfig.postUrl;
+  if ((url == nullptr) || (url[0] == '\0')) {
+    return "windyone.pl";
+  }
+
+  const char* start = strstr(url, "://");
+  start = (start != nullptr) ? (start + 3) : url;
+  size_t length = 0U;
+  while ((start[length] != '\0') && (start[length] != '/') && (start[length] != ':') && (length < (sizeof(host) - 1U))) {
+    host[length] = start[length];
+    length++;
+  }
+  host[length] = '\0';
+
+  return (length > 0U) ? host : "windyone.pl";
+}
+
+static bool probeUploadPath() {
+  IPAddress resolvedIp;
+  if (!WiFi.hostByName(uploadProbeHost(), resolvedIp)) {
+    return false;
+  }
+
+  WiFiClient client;
+  const bool connected = client.connect(resolvedIp, 443, 1500);
+  if (connected) {
+    client.stop();
+  }
+  return connected;
+}
+
+static void forceWifiRecovery() {
+  WiFi.disconnect(false, false);
+  delay(50);
+  WiFi.mode(WIFI_STA);
+  wifiConnectStarted = false;
+  startStationConnection();
+  lastUploadRecoveryMillis = millis();
 }
 
 static void initQueueMetaDefaults() {
@@ -960,7 +997,7 @@ static String buildRootPage() {
   page += "<div class='metric'><div class='label'>Nap. L2</div><div class='value' id='l2State'>-</div></div>";
   page += "<div class='metric'><div class='label'>Nap. L3</div><div class='value' id='l3State'>-</div></div>";
   page += "<div class='metric'><div class='label'>Dopasowane telegramy</div><div class='value' id='matchCountState'>-</div></div>";
-  page += "</div><div class='hint'>Surowy ostatni telegram:</div><pre id='rawTelegram'>Brak danych</pre></div>";
+  page += "</div><div class='hint'>Status strony laduje sie jednorazowo po otwarciu. Aby pobrac nowsze dane, odswiez strone w przegladarce.</div><div class='hint'>Surowy ostatni telegram:</div><pre id='rawTelegram'>Brak danych</pre></div>";
 
   page += "<div class='card'><h2>Konfiguracja</h2>";
   page += "<form method='post' action='/save'>";
@@ -997,7 +1034,7 @@ static String buildRootPage() {
   page += "txt('matchCountState',String(s.matched_count));";
   page += "txt('rawTelegram',s.last_raw_telegram||'Brak danych');";
   page += "}catch(e){txt('wifiState','blad odczytu statusu');}}";
-  page += "refreshStatus();setInterval(refreshStatus,3000);";
+  page += "refreshStatus();";
   page += "</script></div></body></html>";
   return page;
 }
@@ -1020,16 +1057,22 @@ static void sendHtmlMessage(int statusCode, const String& message) {
 }
 
 static void handleRoot() {
+  markWebActivity();
   webServer.send(200, "text/html; charset=utf-8", buildRootPage());
 }
 
 static void handleStatus() {
+  markWebActivity();
   webServer.send(200, "application/json", buildStatusJson());
 }
 
-static void scheduleRestart() {
+static void scheduleRestartAfter(uint32_t delayMs) {
   restartRequested = true;
-  restartAtMillis = millis() + 1500UL;
+  restartAtMillis = millis() + delayMs;
+}
+
+static void scheduleRestart() {
+  scheduleRestartAfter(1500UL);
 }
 
 static void printHealthEvent(const char* status, uint32_t staleMs) {
@@ -1040,7 +1083,56 @@ static void printHealthEvent(const char* status, uint32_t staleMs) {
   Serial.println("}");
 }
 
+static void maintainUploadHealth() {
+  if (restartRequested) {
+    return;
+  }
+  if (lastMatchedTelegramMillis == 0U) {
+    return;
+  }
+
+  const uint32_t now = millis();
+  if ((now - lastMatchedTelegramMillis) > STATUS_STALE_MS) {
+    uploadRestartArmed = false;
+    uploadRestartEligibleAtMillis = 0U;
+    return;
+  }
+
+  const uint32_t uploadReferenceMillis = (lastUploadOkMillis != 0U) ? lastUploadOkMillis : setupCompletedMillis;
+  if (uploadReferenceMillis == 0U) {
+    return;
+  }
+
+  const uint32_t uploadStaleMs = now - uploadReferenceMillis;
+  if (uploadStaleMs < UPLOAD_STUCK_RECOVERY_MS) {
+    uploadRestartArmed = false;
+    uploadRestartEligibleAtMillis = 0U;
+    return;
+  }
+
+  if (lastUploadRecoveryMillis == 0U) {
+    forceWifiRecovery();
+    const bool pathOk = probeUploadPath();
+    if (pathOk) {
+      lastUploadRecoveryMillis = millis();
+    }
+    uploadRestartEligibleAtMillis = lastUploadRecoveryMillis + UPLOAD_STUCK_RESTART_MS;
+    return;
+  }
+
+  if (lastUploadOkMillis > lastUploadRecoveryMillis) {
+    uploadRestartArmed = false;
+    uploadRestartEligibleAtMillis = 0U;
+    return;
+  }
+
+  if ((uploadRestartEligibleAtMillis != 0U) && ((now - uploadRestartEligibleAtMillis) < 0x80000000UL) && (static_cast<int32_t>(now - uploadRestartEligibleAtMillis) >= 0)) {
+    uploadRestartArmed = true;
+  }
+}
+
 static void handleSave() {
+  markWebActivity();
   RuntimeConfig nextConfig = runtimeConfig;
 
   const String newSsid = trimmedArg("ssid");
@@ -1110,6 +1202,7 @@ static void handleSave() {
 }
 
 static void handleNotFound() {
+  markWebActivity();
   webServer.sendHeader("Location", "/", true);
   webServer.send(302, "text/plain", "");
 }
@@ -1129,12 +1222,6 @@ static void dio1FallingAction() {
   fifoNotEmptyIrq = true;
 }
 
-static void printHexByte(uint8_t value) {
-  static constexpr char HEX_DIGITS[] = "0123456789ABCDEF";
-  Serial.print(HEX_DIGITS[(value >> 4) & 0x0F]);
-  Serial.print(HEX_DIGITS[value & 0x0F]);
-}
-
 static void appendHexByte(char* buffer, size_t bufferSize, size_t& position, uint8_t value) {
   static constexpr char HEX_DIGITS[] = "0123456789ABCDEF";
   if ((position + 2U) >= bufferSize) {
@@ -1151,12 +1238,6 @@ static void saveRawTelegramHex(const uint8_t* data, size_t len) {
   const size_t cappedLen = (len > MAX_PACKET_SIZE) ? MAX_PACKET_SIZE : len;
   for (size_t i = 0; i < cappedLen; i++) {
     appendHexByte(lastRawTelegramHex, sizeof(lastRawTelegramHex), position, data[i]);
-  }
-}
-
-static void printHex(const uint8_t* data, size_t len) {
-  for (size_t i = 0; i < len; i++) {
-    printHexByte(data[i]);
   }
 }
 
@@ -1646,16 +1727,17 @@ static bool processUploadQueue(bool forceNow, UploadResult* lastResult) {
   }
 
   const uint32_t now = millis();
-  if (!forceNow && ((now - lastUploadAttemptMillis) < UPLOAD_RETRY_INTERVAL_MS)) {
+  uint32_t retryIntervalMs =
+    (lastUploadResultValid && lastUploadResult.ok) ? UPLOAD_RETRY_SUCCESS_MS : UPLOAD_RETRY_FAILURE_MS;
+  if (isWebUiActive() && lastUploadResultValid && lastUploadResult.ok) {
+    retryIntervalMs = UPLOAD_RETRY_SUCCESS_WHILE_WEB_MS;
+  }
+  if (!forceNow && ((now - lastUploadAttemptMillis) < retryIntervalMs)) {
     return false;
   }
 
-  if (!forceNow && (lastPacketMillis != 0U)) {
-    const uint32_t elapsed = now - lastPacketMillis;
-    const uint32_t timeToNext = (elapsed < 60000UL) ? (60000UL - elapsed) : 0UL;
-    if (timeToNext <= UPLOAD_GUARD_WINDOW_MS) {
-      return false;
-    }
+  if (!forceNow && isReceiveGuardWindowActive()) {
+    return false;
   }
 
   QueueRecord record = {};
@@ -1672,6 +1754,10 @@ static bool processUploadQueue(bool forceNow, UploadResult* lastResult) {
     *lastResult = result;
   }
   if (result.ok) {
+    lastUploadOkMillis = now;
+    lastUploadRecoveryMillis = 0U;
+    uploadRestartEligibleAtMillis = 0U;
+    uploadRestartArmed = false;
     dropOldestQueueRecord();
     return true;
   }
@@ -1701,8 +1787,6 @@ static void printStringOrNull(bool hasValue, const char* value) {
 
 static void printMatchedTelegramJson(
   const ParsedTelegram& parsed,
-  const uint8_t* rawTelegram,
-  size_t rawLen,
   int8_t rssiDbm,
   bool queued,
   const UploadResult& uploadResult
@@ -1737,7 +1821,7 @@ static void printMatchedTelegramJson(
   Serial.print(",\"storage_ok\":");
   Serial.print(storageOk ? "true" : "false");
   Serial.print(",\"raw_telegram\":\"");
-  printHex(rawTelegram, rawLen);
+  Serial.print(lastRawTelegramHex);
   Serial.println("\"}");
 }
 
@@ -1943,7 +2027,6 @@ static void tryReadPacket() {
 
   decodedTelegramCount++;
   lastSuccessfulTelegramMillis = millis();
-  lastPacketMillis = lastSuccessfulTelegramMillis;
   lastParsedTelegram = parsed;
 
   const bool hadQueuedBacklog = storageOk && (queuePendingCount() > 0U);
@@ -1958,6 +2041,11 @@ static void tryReadPacket() {
         if (!queued) {
           storageOk = false;
         }
+      } else {
+        lastUploadOkMillis = millis();
+        lastUploadRecoveryMillis = 0U;
+        uploadRestartEligibleAtMillis = 0U;
+        uploadRestartArmed = false;
       }
     } else {
       queued = enqueueQueueRecord(record);
@@ -1979,7 +2067,12 @@ static void tryReadPacket() {
   } else {
     blinkGreenStatusLed();
   }
-  printMatchedTelegramJson(parsed, decodedPacket, decodedLen, rssiDbm, queued, uploadResult);
+  printMatchedTelegramJson(parsed, rssiDbm, queued, uploadResult);
+
+  if (uploadRestartArmed && !restartRequested) {
+    uploadRestartArmed = false;
+    scheduleRestartAfter(RESTART_AFTER_PACKET_DELAY_MS);
+  }
 }
 
 void setup() {
@@ -1988,10 +2081,6 @@ void setup() {
   statusPixel.begin();
   statusPixel.setBrightness(STATUS_LED_BRIGHTNESS);
   setStatusLedColor(0, 0, 0);
-
-  if (LED_TEST_MODE) {
-    return;
-  }
 
   loadRuntimeConfig();
 
@@ -2010,19 +2099,17 @@ void setup() {
 }
 
 void loop() {
-  if (LED_TEST_MODE) {
-    runLedTestMode();
-    delay(10);
-    return;
-  }
-
   webServer.handleClient();
   if (restartRequested && (static_cast<int32_t>(millis() - restartAtMillis) >= 0)) {
     ESP.restart();
   }
 
-  maintainWifiConnection();
-  managePortalLifetime();
+  const bool receiveGuardWindowActive = isReceiveGuardWindowActive();
+  if (!receiveGuardWindowActive) {
+    maintainWifiConnection();
+    managePortalLifetime();
+    maintainUploadHealth();
+  }
   maintainReceiverHealth();
 
   if (!radioOk) {
@@ -2032,6 +2119,8 @@ void loop() {
   }
 
   tryReadPacket();
-  processUploadQueue(false, nullptr);
+  if (!receiveGuardWindowActive) {
+    processUploadQueue(false, nullptr);
+  }
   updateStatusLed();
 }
