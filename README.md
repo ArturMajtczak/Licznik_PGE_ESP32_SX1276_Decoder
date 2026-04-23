@@ -301,7 +301,7 @@ platformio device monitor
 <img width="250" alt="image" src="https://github.com/user-attachments/assets/1d46a237-a3a1-4d08-b85b-e73c16f6b792" />
 
 5. Wejdz na `http://192.168.4.1`.
-<img width="250" alt="image" src="https://github.com/user-attachments/assets/62090683-155e-45f3-b06b-92192b3f235e" /> <img width="250" alt="image" src="https://github.com/user-attachments/assets/15117aae-ff0a-47e1-b45b-78d753abf5d3" /> <img width="250" alt="image" src="https://github.com/user-attachments/assets/38cea25c-ce7b-4ef5-8f0c-66fae05a5284" />
+<img width="200" alt="image" src="https://github.com/user-attachments/assets/d9619a59-dd37-4c7a-a0aa-49caf8ee9759" /> <img width="200" alt="image" src="https://github.com/user-attachments/assets/15117aae-ff0a-47e1-b45b-78d753abf5d3" /> <img width="200" alt="image" src="https://github.com/user-attachments/assets/38cea25c-ce7b-4ef5-8f0c-66fae05a5284" />
 
 6. Ustaw:
    - Wi-Fi
