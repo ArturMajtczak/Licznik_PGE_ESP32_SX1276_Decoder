@@ -298,6 +298,8 @@ platformio device monitor
 2. Otworz projekt w PlatformIO.
 3. Zbuduj i wgraj firmware.
 4. Po restarcie polacz sie z hotspotem `Licznik-Setup-XXXX`.
+<img width="300" alt="image" src="https://github.com/user-attachments/assets/1d46a237-a3a1-4d08-b85b-e73c16f6b792" />
+
 5. Wejdz na `http://192.168.4.1`.
 6. Ustaw:
    - Wi-Fi
